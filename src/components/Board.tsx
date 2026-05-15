@@ -1,5 +1,12 @@
 import type { Dispatch } from "react";
-import { canAttackFollower, canEvolve, findFollower, getArmedCountSummary, getArmedFollowersLeftPlay } from "../engine/selectors";
+import {
+  canAttackFollower,
+  canEvolve,
+  findFollower,
+  getArmedCountSummary,
+  getArmedFollowersLeftPlay,
+  getRoyalDebugSummary
+} from "../engine/selectors";
 import type { GameAction, GameState, PlayerId } from "../engine/types";
 import { CardView } from "./CardView";
 import { Hand } from "./Hand";
@@ -14,6 +21,8 @@ export function Board({ state, dispatch }: BoardProps) {
   const selected = state.selectedAttackerId ? findFollower(state, state.selectedAttackerId) : undefined;
   const opponentCounts = getArmedCountSummary(state, "opponent");
   const humanCounts = getArmedCountSummary(state, "human");
+  const opponentRoyal = getRoyalDebugSummary(state, "opponent");
+  const humanRoyal = getRoyalDebugSummary(state, "human");
 
   return (
     <section className="battleSurface" aria-label="Battlefield">
@@ -24,6 +33,8 @@ export function Board({ state, dispatch }: BoardProps) {
         armedLeftPlay={opponentCounts.leftPlay}
         armedDestroyed={opponentCounts.destroyed}
         distinctArmedDestroyed={opponentCounts.distinctDestroyedCount}
+        revealedThisTurn={opponentRoyal.revealedThisTurn}
+        destroyedFourKnights={opponentRoyal.destroyedTwoCostCommanderCardIds.length}
         onLeaderClick={() => dispatch({ type: "ATTACK_LEADER" })}
       />
 
@@ -62,6 +73,8 @@ export function Board({ state, dispatch }: BoardProps) {
         armedLeftPlay={humanCounts.leftPlay}
         armedDestroyed={humanCounts.destroyed}
         distinctArmedDestroyed={humanCounts.distinctDestroyedCount}
+        revealedThisTurn={humanRoyal.revealedThisTurn}
+        destroyedFourKnights={humanRoyal.destroyedTwoCostCommanderCardIds.length}
       />
 
       <Hand state={state} dispatch={dispatch} />

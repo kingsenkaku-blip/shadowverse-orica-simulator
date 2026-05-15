@@ -1,4 +1,8 @@
-import { ARMED_DRAGON_CARDS, CARD_IDS, DUAL_MODE_IDS, getCardDefinition } from "../data/cards/armed-dragon";
+import { CARD_IDS, DUAL_MODE_IDS, getCardDefinition } from "../data/cards/armed-dragon";
+import { ROYAL_CARD_IDS } from "../data/cards/royal-f";
+import { findBanishTargetByAttack } from "./banish";
+import { getFourKnightsReanimateTargets } from "./reanimate";
+import { chooseRevealCard, revealCard } from "./reveal";
 import { randomInt } from "./rng";
 import {
   canAttackFollower,
@@ -14,6 +18,9 @@ import {
   isArmedCard,
   isArmedFollower,
   isLegalFollowerTarget,
+  isRoyalCard,
+  isRoyalFollowerCard,
+  isTwoCostCommanderFollowerCard,
   opponentOf
 } from "./selectors";
 import type {
@@ -157,7 +164,7 @@ export function playCard(input: GameState, playerId: PlayerId, cardInstanceId: s
   }
 
   if (definition.type === "follower") {
-    const follower = summonFollower(state, playerId, definition.id, card.instanceId);
+    const follower = summonFollower(state, playerId, definition.id, card.instanceId, card);
     if (follower) {
       applyFanfare(state, playerId, follower, card);
     } else {
@@ -232,15 +239,21 @@ export function attackFollower(
   const enemy = state.players[opponentOf(playerId)];
   const attacker = player.board.find((unit) => unit.instanceId === attackerInstanceId);
   const target = enemy.board.find((unit) => unit.instanceId === targetInstanceId);
-  if (!attacker || !target || !canAttackFollower(state, attacker) || !isLegalFollowerTarget(state, target)) {
+  if (!attacker || !target || !canAttackFollower(state, attacker) || !isLegalFollowerTarget(state, target, attacker)) {
     return state;
   }
 
   applyAttackModeBuff(state, attacker);
+  applyRoyalAttackEffects(state, attacker);
+  applyAllyAttackTriggers(state, attacker);
   applyDualGammaClash(state, attacker, target);
   markAttackUsed(attacker);
   state.selectedAttackerId = undefined;
   addLog(state, `${attacker.name} が ${target.name} を攻撃。`);
+  if (!enemy.board.some((unit) => unit.instanceId === target.instanceId)) {
+    checkWinner(state);
+    return state;
+  }
 
   const attackerDamage = attacker.attack;
   const targetDamage = target.attack;
@@ -259,6 +272,8 @@ export function attackLeader(input: GameState, playerId: PlayerId, attackerInsta
   if (!attacker || !canAttackLeader(state, attacker)) return state;
 
   applyAttackModeBuff(state, attacker);
+  applyRoyalAttackEffects(state, attacker);
+  applyAllyAttackTriggers(state, attacker);
   markAttackUsed(attacker);
   state.selectedAttackerId = undefined;
   addLog(state, `${attacker.name} がリーダーを攻撃。`);
@@ -284,6 +299,11 @@ export function dealFollowerDamage(
   amount: number,
   sourceName: string
 ): void {
+  if ((follower.damageShield ?? 0) > 0 && amount > 0) {
+    follower.damageShield = Math.max(0, (follower.damageShield ?? 0) - 1);
+    addLog(state, `${follower.name}: 次に受けるダメージを0にした。`);
+    return;
+  }
   const actual = reduceFollowerDamage(state, follower, amount);
   if (actual < amount) {
     addLog(state, `${follower.name} へのダメージを${amount - actual}軽減。`);
@@ -299,7 +319,7 @@ export function banishFollower(input: GameState, playerId: PlayerId, followerIns
   const state = cloneGameState(input);
   const follower = state.players[playerId].board.find((unit) => unit.instanceId === followerInstanceId);
   if (follower) {
-    removeFollowerFromPlay(state, follower, "消滅", false);
+    banishFollowerInPlace(state, follower, "消滅");
   }
   return state;
 }
@@ -354,6 +374,178 @@ export function debugSetMaxPp(input: GameState, playerId: PlayerId, value: numbe
   return state;
 }
 
+export function debugSetRevealedThisTurn(input: GameState, playerId: PlayerId, value: boolean): GameState {
+  const state = cloneGameState(input);
+  state.revealedCardThisTurn[playerId] = value;
+  addLog(state, `デバッグ: ${state.players[playerId].name}の公開済みフラグを${value ? "ON" : "OFF"}に変更`);
+  return state;
+}
+
+export function debugAddDestroyedTwoCostCommander(input: GameState, playerId: PlayerId, cardId: string): GameState {
+  const state = cloneGameState(input);
+  addUnique(state.destroyedTwoCostCommanderCardIds[playerId], cardId);
+  addUnique(state.destroyedCommanderFollowerCardIds[playerId], cardId);
+  addLog(state, `デバッグ: ${state.players[playerId].name}の破壊済み四騎士に ${cardId} を追加`);
+  return state;
+}
+
+export function debugResetDestroyedTwoCostCommanders(input: GameState, playerId: PlayerId): GameState {
+  const state = cloneGameState(input);
+  state.destroyedTwoCostCommanderCardIds[playerId] = [];
+  addLog(state, `デバッグ: ${state.players[playerId].name}の破壊済み四騎士リストをリセット`);
+  return state;
+}
+
+export function debugTransformSunlight(input: GameState, playerId: PlayerId): GameState {
+  const state = cloneGameState(input);
+  transformSunlightInHand(state, playerId);
+  return state;
+}
+
+function revealFromHand(
+  state: GameState,
+  playerId: PlayerId,
+  sourceName: string,
+  predicate: (cardId: string) => boolean
+): CardInstance | undefined {
+  const card = chooseRevealCard(state, playerId, (candidate) => predicate(candidate.definitionId));
+  if (!card) {
+    addLog(state, `${sourceName}: 公開対象がありません。`);
+    return undefined;
+  }
+  revealCard(state, playerId, card);
+  addLog(state, `${sourceName}: ${getCardDefinition(card.definitionId).name}を公開。`);
+  applyOnReveal(state, playerId, card.definitionId);
+  return card;
+}
+
+function applyOnReveal(state: GameState, playerId: PlayerId, cardId: string): void {
+  const player = state.players[playerId];
+  const opponent = opponentOf(playerId);
+  switch (getCardDefinition(cardId).effect) {
+    case "ROYAL_SOLAR_KNIGHT_SUNLIGHT":
+      addLog(state, "太陽の騎士・サンライト: 公開時効果で1ドロー。");
+      drawCards(state, playerId, 1);
+      break;
+    case "ROYAL_STELLAR_KNIGHT_STARLIGHT": {
+      const target = player.board[0];
+      if (target) {
+        addLog(state, "星の騎士・スターライト: 公開時効果で味方を+1/+1。");
+        buffFollower(state, target, 1, 1, getCardDefinition(cardId).name);
+      }
+      break;
+    }
+    case "ROYAL_LUNAR_KNIGHT_MOONLIGHT": {
+      const target = player.board.find((follower) => getCardDefinition(follower.definitionId).cost >= 5);
+      if (target && !target.keywords.includes("rush")) {
+        target.keywords.push("rush");
+        target.canAttackFollowers = true;
+        addLog(state, "月の騎士・ムーンライト: 公開時効果で突進を付与。");
+      }
+      break;
+    }
+    case "ROYAL_SUNLIGHT_CRIMSON_SKYSWORD": {
+      addLog(state, "紅蓮の天剣・サンライト: 公開時効果。");
+      drawCards(state, playerId, 1);
+      player.pp = Math.min(player.maxPp, player.pp + 2);
+      dealLeaderDamage(state, opponent, 2, getCardDefinition(cardId).name);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function chooseRandomEnemyFollower(state: GameState, playerId: PlayerId): FollowerInstance | undefined {
+  const board = state.players[playerId].board;
+  if (board.length === 0) return undefined;
+  const roll = randomInt(state.rngSeed, board.length);
+  state.rngSeed = roll.seed;
+  return board[roll.value];
+}
+
+function transformSunlightInHand(state: GameState, playerId: PlayerId): void {
+  const player = state.players[playerId];
+  const index = player.hand.findIndex((card) => card.definitionId === ROYAL_CARD_IDS.solarKnightSunlight);
+  if (index < 0) {
+    addLog(state, "サンライト・チャージ: 変身対象のサンライトなし。");
+    return;
+  }
+  player.hand[index] = {
+    ...player.hand[index],
+    definitionId: ROYAL_CARD_IDS.sunlightCrimsonSkysword,
+    attackModifier: 0,
+    defenseModifier: 0,
+    isRevealed: false,
+    revealedThisTurn: false
+  };
+  addLog(state, "サンライト・チャージ: 太陽の騎士・サンライトを紅蓮の天剣・サンライトに変身。");
+}
+
+function searchTwoCostCommander(state: GameState, playerId: PlayerId, sourceName: string): void {
+  const fourKnightIds: string[] = [
+    ROYAL_CARD_IDS.victoriousFirstKnight,
+    ROYAL_CARD_IDS.woteusSecondKnight,
+    ROYAL_CARD_IDS.stabelusThirdKnight,
+    ROYAL_CARD_IDS.desterioFourthKnight
+  ];
+  searchDeckToHand(
+    state,
+    playerId,
+    (deckCard) => isTwoCostCommanderFollowerCard(deckCard.definitionId) && fourKnightIds.includes(deckCard.definitionId)
+  );
+  addLog(state, `${sourceName}: コスト2指揮官をサーチ。`);
+}
+
+function reanimateFourKnights(state: GameState, playerId: PlayerId): void {
+  const player = state.players[playerId];
+  const targets = getFourKnightsReanimateTargets(state, playerId);
+  if (targets.length === 0) {
+    addLog(state, "終焉のいななき: 蘇生対象がありません。");
+    return;
+  }
+
+  for (const cardId of targets) {
+    if (player.board.length >= MAX_BOARD_SIZE) break;
+    const follower = summonFollower(state, playerId, cardId, `${playerId}-reanimated-${state.nextInstanceNumber}`);
+    if (!follower) break;
+    state.nextInstanceNumber += 1;
+    addLog(state, `終焉のいななき: ${follower.name}を場に出した。`);
+    if (player.maxPp >= 8) {
+      specialEvolveFollower(state, follower);
+      addLog(state, "終焉のいななき: PP最大値8以上のため、出したフォロワーを進化させた。");
+    }
+  }
+}
+
+function specialEvolveFollower(state: GameState, follower: FollowerInstance): void {
+  follower.evolved = true;
+  evolveStats(follower);
+  if (follower.definitionId === ROYAL_CARD_IDS.victoriousFirstKnight) {
+    if (!follower.keywords.includes("storm")) follower.keywords.push("storm");
+    follower.canAttackLeader = true;
+    follower.canAttackFollowers = true;
+    follower.canIgnoreWard = true;
+  }
+  if (follower.definitionId === ROYAL_CARD_IDS.desterioFourthKnight) {
+    follower.canIgnoreWard = true;
+  }
+  addLog(state, `${follower.name}: 特殊効果で進化。`);
+}
+
+function shuffleCardIntoDeck(state: GameState, playerId: PlayerId, cardId: string, count = 1): void {
+  const player = state.players[playerId];
+  for (let index = 0; index < count; index += 1) {
+    player.deck.push({
+      instanceId: `${playerId}-deck-added-${state.nextInstanceNumber}`,
+      definitionId: cardId,
+      owner: playerId
+    });
+    state.nextInstanceNumber += 1;
+  }
+  addLog(state, `${getCardDefinition(cardId).name}をデッキに${count}枚加えた。`);
+}
+
 function mutateStartTurn(state: GameState, playerId: PlayerId, skipDraw = false): void {
   state.activePlayer = playerId;
   state.selectedAttackerId = undefined;
@@ -363,6 +555,12 @@ function mutateStartTurn(state: GameState, playerId: PlayerId, skipDraw = false)
   player.turnNumber += 1;
   player.maxPp = Math.min(MAX_PP, player.maxPp + 1);
   player.pp = player.maxPp;
+  state.revealedCardThisTurn[playerId] = false;
+  state.revealedCards[playerId] = [];
+  for (const card of player.hand) {
+    card.isRevealed = false;
+    card.revealedThisTurn = false;
+  }
 
   for (const follower of player.board) {
     follower.hasAttacked = false;
@@ -370,6 +568,7 @@ function mutateStartTurn(state: GameState, playerId: PlayerId, skipDraw = false)
     follower.canAttackFollowers = true;
     follower.canAttackLeader = true;
     follower.buffTriggersUsed = [];
+    follower.sunlightExtraAttackUsedThisTurn = false;
   }
 
   addLog(state, `-- ${player.name} ターン ${player.turnNumber} / PP ${player.pp} --`);
@@ -381,7 +580,8 @@ function summonFollower(
   state: GameState,
   playerId: PlayerId,
   definitionId: string,
-  sourceCardInstanceId?: string
+  sourceCardInstanceId?: string,
+  sourceCard?: CardInstance
 ): FollowerInstance | undefined {
   const player = state.players[playerId];
   if (player.board.length >= MAX_BOARD_SIZE) {
@@ -390,15 +590,17 @@ function summonFollower(
   }
 
   const definition = getCardDefinition(definitionId);
+  const attackModifier = sourceCard?.attackModifier ?? 0;
+  const defenseModifier = sourceCard?.defenseModifier ?? 0;
   const follower: FollowerInstance = {
     instanceId: sourceCardInstanceId ?? `${playerId}-token-${state.nextInstanceNumber}`,
     definitionId,
     sourceDefinitionId: definitionId,
     owner: playerId,
     name: definition.name,
-    attack: definition.attack ?? 0,
-    defense: definition.defense ?? 0,
-    maxDefense: definition.defense ?? 0,
+    attack: (definition.attack ?? 0) + attackModifier,
+    defense: (definition.defense ?? 0) + defenseModifier,
+    maxDefense: (definition.defense ?? 0) + defenseModifier,
     traits: [...definition.traits],
     keywords: [...(definition.keywords ?? [])],
     evolved: false,
@@ -409,6 +611,13 @@ function summonFollower(
     attacksThisTurn: 0,
     maxAttacksPerTurn: definitionId === CARD_IDS.laevateinnDualAlpha ? 2 : 1,
     freeEvolve: false,
+    cantBeDestroyedByEffects: definitionId === ROYAL_CARD_IDS.waxingMoonBrawler,
+    damageShield: definitionId === ROYAL_CARD_IDS.waxingMoonBrawler ? 1 : 0,
+    canIgnoreWard: false,
+    cannotEvolveWithEp: definition.cannotEvolveWithEp,
+    cannotBeAttacked:
+      definitionId === ROYAL_CARD_IDS.destructionBlademaster &&
+      player.board.some((unit) => unit.definitionId === ROYAL_CARD_IDS.annihilationBlademaster),
     buffTriggersUsed: []
   };
 
@@ -529,6 +738,70 @@ function applyFanfare(
         drawCards(state, playerId, 1);
       }
       break;
+    case "ROYAL_SUN_GUIDING_SWORDSMAN": {
+      const revealed = revealFromHand(state, playerId, follower.name, isRoyalFollowerCard);
+      if (revealed) {
+        const target = chooseRandomEnemyFollower(state, opponent);
+        if (target) {
+          addLog(state, `${follower.name}: ランダムな相手フォロワーに2ダメージ。`);
+          dealFollowerDamage(state, target, 2, follower.name);
+        }
+      }
+      break;
+    }
+    case "ROYAL_SUN_SEEKING_WARRIOR": {
+      const revealed = revealFromHand(state, playerId, follower.name, isRoyalFollowerCard);
+      if (revealed && !follower.keywords.includes("storm")) {
+        follower.keywords.push("storm");
+        follower.canAttackLeader = true;
+        follower.canAttackFollowers = true;
+        addLog(state, `${follower.name}: 疾走を得た。`);
+      }
+      break;
+    }
+    case "ROYAL_SUN_KNOWING_STRATEGIST":
+      if (revealFromHand(state, playerId, follower.name, isRoyalCard)) {
+        buffFollower(state, follower, 1, 1, follower.name);
+      }
+      break;
+    case "ROYAL_STAR_WISHING_SPEARMAN":
+      if (revealFromHand(state, playerId, follower.name, isRoyalCard)) {
+        for (const enemyFollower of [...state.players[opponent].board]) {
+          dealFollowerDamage(state, enemyFollower, 1, follower.name);
+        }
+      }
+      break;
+    case "ROYAL_WAXING_MOON_BRAWLER":
+      follower.damageShield = 1;
+      follower.cantBeDestroyedByEffects = true;
+      addLog(state, `${follower.name}: 次に受けるダメージを0にする。`);
+      break;
+    case "ROYAL_SOLAR_KNIGHT_SUNLIGHT":
+      if (revealFromHand(state, playerId, follower.name, isRoyalCard)) {
+        const target = chooseRandomEnemyFollower(state, opponent);
+        if (target) destroyFollower(state, target, follower.name, true);
+      }
+      break;
+    case "ROYAL_LUNAR_KNIGHT_MOONLIGHT":
+      for (const enemyFollower of [...state.players[opponent].board]) {
+        dealFollowerDamage(state, enemyFollower, 7, follower.name);
+      }
+      break;
+    case "ROYAL_SUNLIGHT_CRIMSON_SKYSWORD":
+      if (revealFromHand(state, playerId, follower.name, isRoyalCard)) {
+        for (const enemyFollower of [...state.players[opponent].board]) {
+          dealFollowerDamage(state, enemyFollower, 4, follower.name);
+        }
+      }
+      break;
+    case "ROYAL_ANNIHILATION_BLADEMASTER":
+      searchTwoCostCommander(state, playerId, follower.name);
+      break;
+    case "ROYAL_DESTRUCTION_BLADEMASTER":
+      searchTwoCostCommander(state, playerId, follower.name);
+      player.pp = Math.min(player.maxPp, player.pp + 1);
+      addLog(state, `${follower.name}: PPを1回復。`);
+      break;
     default:
       break;
   }
@@ -569,6 +842,19 @@ function applySpellOrAmulet(state: GameState, playerId: PlayerId, card: CardInst
       break;
     case "DRAGON_EMISSARY":
       searchDeckToHand(state, playerId, (deckCard) => getCardDefinition(deckCard.definitionId).cost >= 5, -1);
+      break;
+    case "ROYAL_SUNLIGHT_CHARGE": {
+      const revealed = revealFromHand(state, playerId, definition.name, isRoyalCard);
+      if (revealed) {
+        const before = player.pp;
+        player.pp = Math.min(player.maxPp, player.pp + 1);
+        addLog(state, `${definition.name}: PPを1回復。${before} -> ${player.pp}`);
+      }
+      transformSunlightInHand(state, playerId);
+      break;
+    }
+    case "ROYAL_BRAY_OF_THE_END":
+      reanimateFourKnights(state, playerId);
       break;
     default:
       addLog(state, `${definition.name}: TODO_EFFECT（プレイのみ処理）。`);
@@ -682,6 +968,13 @@ function applyEvolveEffect(
       if (target) destroyFollower(state, target, follower.name, true);
       break;
     }
+    case ROYAL_CARD_IDS.stellarKnightStarlight:
+      if (revealFromHand(state, playerId, follower.name, isRoyalCard)) {
+        const before = state.players[playerId].pp;
+        state.players[playerId].pp = Math.min(state.players[playerId].maxPp, state.players[playerId].pp + 2);
+        addLog(state, `${follower.name}: PPを2回復。${before} -> ${state.players[playerId].pp}`);
+      }
+      break;
     default:
       if (laevateinnMode !== "base") {
         addLog(state, `${follower.name} は ${laevateinnMode} モードへ。`);
@@ -786,6 +1079,64 @@ function applyAttackModeBuff(state: GameState, attacker: FollowerInstance): void
   }
 }
 
+function applyRoyalAttackEffects(state: GameState, attacker: FollowerInstance): void {
+  const player = state.players[attacker.owner];
+  switch (attacker.definitionId) {
+    case ROYAL_CARD_IDS.sunSeekingWarrior: {
+      const target = player.hand.find((card) => isRoyalFollowerCard(card.definitionId));
+      if (target) {
+        target.attackModifier = (target.attackModifier ?? 0) + 1;
+        addLog(state, `${attacker.name}: 手札の${getCardDefinition(target.definitionId).name}を+1/+0。`);
+      }
+      break;
+    }
+    case ROYAL_CARD_IDS.solarKnightSunlight:
+      if (state.revealedCardThisTurn[attacker.owner] && !attacker.sunlightExtraAttackUsedThisTurn) {
+        attacker.maxAttacksPerTurn = Math.max(attacker.maxAttacksPerTurn, attacker.attacksThisTurn + 2);
+        attacker.sunlightExtraAttackUsedThisTurn = true;
+        addLog(state, `${attacker.name}: 公開済みターンの追加攻撃を得た。`);
+      }
+      break;
+    case ROYAL_CARD_IDS.sunlightCrimsonSkysword:
+      dealLeaderDamage(state, opponentOf(attacker.owner), 2, attacker.name);
+      break;
+    default:
+      break;
+  }
+}
+
+function applyAllyAttackTriggers(state: GameState, attacker: FollowerInstance): void {
+  const owner = state.players[attacker.owner];
+  const opponent = opponentOf(attacker.owner);
+  for (const ally of [...owner.board]) {
+    if (ally.instanceId === attacker.instanceId) continue;
+    switch (ally.definitionId) {
+      case ROYAL_CARD_IDS.victoriousFirstKnight:
+        addLog(state, `${ally.name}: 他の味方攻撃時効果。`);
+        for (const enemyFollower of [...state.players[opponent].board]) {
+          dealFollowerDamage(state, enemyFollower, 1, ally.name);
+        }
+        break;
+      case ROYAL_CARD_IDS.woteusSecondKnight:
+        addLog(state, `${ally.name}: 他の味方攻撃時効果で1ドロー。`);
+        drawCards(state, ally.owner, 1);
+        break;
+      case ROYAL_CARD_IDS.stabelusThirdKnight:
+        addLog(state, `${ally.name}: 他の味方攻撃時効果で3回復。`);
+        healLeader(state, ally.owner, 3);
+        break;
+      case ROYAL_CARD_IDS.desterioFourthKnight: {
+        addLog(state, `${ally.name}: 他の味方攻撃時効果。`);
+        const target = findBanishTargetByAttack(state, opponent);
+        if (target) banishFollowerInPlace(state, target, ally.name);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
 function applyDualGammaClash(state: GameState, attacker: FollowerInstance, target: FollowerInstance): void {
   const gamma =
     attacker.definitionId === CARD_IDS.laevateinnDualGamma
@@ -833,6 +1184,21 @@ function destroyFollower(
   removeFollowerFromPlay(state, follower, sourceName, true);
 }
 
+function banishFollowerInPlace(state: GameState, follower: FollowerInstance, sourceName: string): void {
+  const owner = state.players[follower.owner];
+  const boardIndex = owner.board.findIndex((unit) => unit.instanceId === follower.instanceId);
+  if (boardIndex < 0) return;
+  const [removed] = owner.board.splice(boardIndex, 1);
+  owner.banished.push({
+    instanceId: `${removed.instanceId}-banished-${state.nextInstanceNumber}`,
+    definitionId: removed.sourceDefinitionId,
+    owner: removed.owner
+  });
+  state.nextInstanceNumber += 1;
+  if (isArmedFollower(removed)) incrementArmedFollowersLeftPlay(state, removed.owner);
+  addLog(state, `${sourceName}: ${removed.name} を消滅させた。`);
+}
+
 function removeFollowerFromPlay(
   state: GameState,
   follower: FollowerInstance,
@@ -853,11 +1219,67 @@ function removeFollowerFromPlay(
     incrementArmedFollowersLeftPlay(state, removed.owner);
     if (destroyed) incrementArmedFollowersDestroyed(state, removed.owner, removed.sourceDefinitionId);
   }
+  if (destroyed) {
+    registerDestroyedCommander(state, removed.owner, removed.sourceDefinitionId);
+    applyLastWords(state, removed);
+  }
   addLog(state, `${sourceName}: ${removed.name} は場を離れた。`);
 
   if (destroyed && removed.sourceDefinitionId === CARD_IDS.hammerDragonewt) {
     addCardToHand(state, removed.owner, CARD_IDS.dragonSmash);
   }
+}
+
+function registerDestroyedCommander(state: GameState, playerId: PlayerId, cardId: string): void {
+  const definition = getCardDefinition(cardId);
+  if (definition.type !== "follower" || !definition.traits.includes("commander")) return;
+  addUnique(state.destroyedCommanderFollowerCardIds[playerId], cardId);
+  if (definition.cost === 2) {
+    addUnique(state.destroyedTwoCostCommanderCardIds[playerId], cardId);
+    addLog(state, `破壊済み四騎士リストに${definition.name}を登録。`);
+  }
+}
+
+function applyLastWords(state: GameState, follower: FollowerInstance): void {
+  switch (follower.sourceDefinitionId) {
+    case ROYAL_CARD_IDS.annihilationBlademaster:
+      shuffleCardIntoDeck(state, follower.owner, ROYAL_CARD_IDS.brayOfTheEnd, 1);
+      break;
+    case ROYAL_CARD_IDS.victoriousFirstKnight:
+      drawCards(state, follower.owner, 1);
+      addLog(state, `${follower.name}: ラストワードで1ドロー。`);
+      break;
+    case ROYAL_CARD_IDS.woteusSecondKnight:
+      if (follower.evolved) {
+        // TODO_ROYAL_EFFECT: Woteus deck replacement effect.
+        shuffleCardIntoDeck(state, follower.owner, ROYAL_CARD_IDS.brayOfTheEnd, 2);
+        drawCards(state, follower.owner, 1);
+        addLog(state, `${follower.name}: 進化後ラストワードをMVP処理。`);
+      }
+      break;
+    case ROYAL_CARD_IDS.stabelusThirdKnight:
+      if (follower.evolved) {
+        const owner = state.players[follower.owner];
+        if (owner.health < 10) owner.health = Math.min(owner.maxHealth, 10);
+        addLog(state, `${follower.name}: 進化後ラストワードで体力を10へ。`);
+      }
+      break;
+    case ROYAL_CARD_IDS.desterioFourthKnight:
+      if (follower.evolved) {
+        const enemy = opponentOf(follower.owner);
+        for (const target of [...state.players[enemy].board]) {
+          banishFollowerInPlace(state, target, follower.name);
+        }
+        addLog(state, `${follower.name}: 進化後ラストワードで相手フォロワーすべてを消滅。`);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+function addUnique(list: string[], cardId: string): void {
+  if (!list.includes(cardId)) list.push(cardId);
 }
 
 function incrementArmedFollowersLeftPlay(state: GameState, playerId: PlayerId): void {
@@ -947,7 +1369,7 @@ function searchDeckToHand(
 
   const [card] = player.deck.splice(index, 1);
   card.costModifier = (card.costModifier ?? 0) + costModifier;
-  const definition = ARMED_DRAGON_CARDS[card.definitionId];
+  const definition = getCardDefinition(card.definitionId);
   if (player.hand.length >= MAX_HAND_SIZE) {
     player.graveyard.push(card);
     addLog(state, `${definition.name} は手札上限で墓場へ。`);

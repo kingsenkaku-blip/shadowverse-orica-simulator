@@ -1,4 +1,5 @@
 import { CARD_IDS, getCardDefinition } from "../data/cards/armed-dragon";
+import { ROYAL_CARD_IDS } from "../data/cards/royal-f";
 import {
   attackFollower,
   attackLeader,
@@ -74,6 +75,13 @@ function scoreCard(state: GameState, playerId: PlayerId, card: CardInstance): nu
 
   if (definition.id === CARD_IDS.laevateinnDragon) score += getArmedFollowersLeftPlay(state, playerId) >= 4 ? 80 : 35;
   if (definition.id === CARD_IDS.dualRage) score += 120;
+  if (definition.id === ROYAL_CARD_IDS.sunlightCharge) {
+    score += player.hand.some((hand) => hand.definitionId === ROYAL_CARD_IDS.solarKnightSunlight) ? 80 : 20;
+  }
+  if (definition.id === ROYAL_CARD_IDS.brayOfTheEnd) {
+    const destroyedKinds = state.destroyedTwoCostCommanderCardIds[playerId]?.length ?? 0;
+    score += destroyedKinds >= 2 && player.board.length <= 3 ? 130 : -20;
+  }
   if (definition.id === CARD_IDS.dragonicArmor || definition.id === CARD_IDS.dragnir) score += 24;
   if (definition.id === CARD_IDS.dragonWeapon) score += player.board.length < 4 ? 22 : -15;
   if (definition.id === CARD_IDS.dragonEmissary) score += player.hand.some((hand) => hand.definitionId === CARD_IDS.laevateinnDragon) ? -20 : 30;
@@ -136,7 +144,7 @@ function chooseAttack(
   const leaderAttacker = [...player.board]
     .filter((follower) => canAttackLeader(state, follower))
     .sort((a, b) => b.attack - a.attack)[0];
-  if (leaderAttacker && !hasWardFollower(state, enemyId)) {
+  if (leaderAttacker && (leaderAttacker.canIgnoreWard || !hasWardFollower(state, enemyId))) {
     return { attacker: leaderAttacker, target: "leader" };
   }
 
@@ -148,7 +156,7 @@ function chooseFollowerTarget(
   attacker: FollowerInstance,
   enemyBoard: FollowerInstance[]
 ): FollowerInstance | undefined {
-  const legalTargets = enemyBoard.filter((target) => isLegalFollowerTarget(state, target));
+  const legalTargets = enemyBoard.filter((target) => isLegalFollowerTarget(state, target, attacker));
   const wards = legalTargets.filter((target) => target.keywords.includes("ward"));
   const pool = wards.length > 0 ? wards : legalTargets;
   return pool

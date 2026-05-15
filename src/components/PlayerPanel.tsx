@@ -7,6 +7,8 @@ interface PlayerPanelProps {
   armedLeftPlay?: number;
   armedDestroyed?: number;
   distinctArmedDestroyed?: number;
+  revealedThisTurn?: boolean;
+  destroyedFourKnights?: number;
   onLeaderClick?: () => void;
 }
 
@@ -17,6 +19,8 @@ export function PlayerPanel({
   armedLeftPlay,
   armedDestroyed,
   distinctArmedDestroyed,
+  revealedThisTurn,
+  destroyedFourKnights,
   onLeaderClick
 }: PlayerPanelProps) {
   return (
@@ -42,6 +46,9 @@ export function PlayerPanel({
         <span>破壊武装 {armedDestroyed ?? player.armedFollowersDestroyed}</span>
         <span>異名破壊 {distinctArmedDestroyed ?? player.distinctArmedFollowersDestroyed.length}</span>
         <span>Weapon {player.amulets?.length ?? player.pendingWeapons}</span>
+        <span>公開 {revealedThisTurn ? "済" : "未"}</span>
+        <span>四騎士破壊 {destroyedFourKnights ?? 0}</span>
+        <span>{player.deckId}</span>
       </div>
     </button>
   );

@@ -3,7 +3,10 @@ import { HELP_IDS, getCardById } from "../data/cards/armed-dragon";
 const categoryLabels = {
   "normal-laevateinn": "normal-laevateinn",
   "dual-rage": "dual-rage",
-  "armed-dragon": "armed-dragon"
+  "armed-dragon": "armed-dragon",
+  "royal-f-reveal": "royal-f-reveal",
+  "royal-f-four-knights": "royal-f-four-knights",
+  "royal-f-token": "royal-f-token"
 } as const;
 
 export function HelpIdPanel() {

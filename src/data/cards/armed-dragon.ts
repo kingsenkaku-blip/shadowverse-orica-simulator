@@ -1,4 +1,5 @@
 import type { CardDefinition, HelpCategory } from "../../engine/types";
+import { ROYAL_F_CARDS, ROYAL_HELP_IDS } from "./royal-f";
 
 export const CARD_IDS = {
   dragonWeapon: "draconic-weapon",
@@ -53,7 +54,8 @@ export const HELP_IDS: Record<HelpCategory, string[]> = {
     CARD_IDS.laevateinnDualBeta,
     CARD_IDS.laevateinnDualGamma
   ],
-  "armed-dragon": []
+  "armed-dragon": [],
+  ...ROYAL_HELP_IDS
 };
 
 const dragonFollower = {
@@ -430,10 +432,13 @@ export const ARMED_DRAGON_CARDS: Record<string, CardDefinition> = {
   }
 };
 
-export const cardRegistry = ARMED_DRAGON_CARDS;
+export const cardRegistry: Record<string, CardDefinition> = {
+  ...ARMED_DRAGON_CARDS,
+  ...ROYAL_F_CARDS
+};
 
 export function getCardDefinition(cardId: string): CardDefinition {
-  const definition = ARMED_DRAGON_CARDS[cardId];
+  const definition = cardRegistry[cardId];
   if (!definition) {
     throw new Error(`Unknown card definition: ${cardId}`);
   }
@@ -441,5 +446,5 @@ export function getCardDefinition(cardId: string): CardDefinition {
 }
 
 export function getCardById(cardId: string): CardDefinition | undefined {
-  return ARMED_DRAGON_CARDS[cardId];
+  return cardRegistry[cardId];
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer } from "react";
-import { ARMED_DRAGON_DECK_NAME, ARMED_DRAGON_SOURCE_URL, DECK_TOTAL } from "../data/decks/armed-dragon";
-import { createGame, deckSummary } from "../engine/game";
+import { ARMED_DRAGON_SOURCE_URL } from "../data/decks/armed-dragon";
+import { getDeckDefinition } from "../data/decks";
+import { createGame, deckSummaryFor } from "../engine/game";
 import { gameReducer } from "../engine/reducer";
 import { Board } from "./Board";
 import { Controls } from "./Controls";
@@ -11,7 +12,8 @@ import { LogPanel } from "./LogPanel";
 
 export function App() {
   const [state, dispatch] = useReducer(gameReducer, undefined, () => createGame("armed-dragon-mirror"));
-  const cards = useMemo(() => deckSummary(), []);
+  const currentDeck = getDeckDefinition(state.players.human.deckId);
+  const cards = useMemo(() => deckSummaryFor(state.players.human.deckId), [state.players.human.deckId]);
 
   useEffect(() => {
     if (state.activePlayer !== "opponent" || state.winner) return;
@@ -24,10 +26,10 @@ export function App() {
       <section className="topBar">
         <div>
           <p className="eyebrow">Text Card Mirror Simulator</p>
-          <h1>{ARMED_DRAGON_DECK_NAME}</h1>
+          <h1>{currentDeck.name}</h1>
         </div>
         <div className="sourceBox">
-          <span>40枚ミラー</span>
+          <span>{currentDeck.total} cards</span>
           <a href={ARMED_DRAGON_SOURCE_URL} target="_blank" rel="noreferrer">
             参照ページ
           </a>
@@ -43,7 +45,7 @@ export function App() {
           <section className="panel deckPanel" aria-label="Deck list">
             <div className="panelHeader">
               <h2>Deck</h2>
-              <span>{DECK_TOTAL} cards</span>
+              <span>{currentDeck.total} cards</span>
             </div>
             <div className="deckList">
               {cards.map((card) => (

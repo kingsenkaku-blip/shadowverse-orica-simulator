@@ -5,10 +5,14 @@ import {
   chooseDualMode,
   debugAddDistinctArmedDestroyed,
   debugAddCardToHand,
+  debugAddDestroyedTwoCostCommander,
   debugResetArmedCounts,
+  debugResetDestroyedTwoCostCommanders,
   debugSetArmedDestroyed,
   debugSetArmedLeftPlay,
   debugSetMaxPp,
+  debugSetRevealedThisTurn,
+  debugTransformSunlight,
   endTurn,
   evolveFollower,
   playCard
@@ -18,7 +22,10 @@ import type { GameAction, GameState } from "./types";
 
 export function gameReducer(state: GameState, action: GameAction): GameState {
   if (action.type === "NEW_GAME") {
-    return createGame(action.seed);
+    return createGame(action.seed, {
+      human: action.humanDeckId,
+      opponent: action.opponentDeckId
+    });
   }
 
   if (state.winner && action.type !== "END_TURN") {
@@ -60,6 +67,14 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       return debugAddCardToHand(state, action.playerId, action.cardId);
     case "DEBUG_SET_MAX_PP":
       return debugSetMaxPp(state, action.playerId, action.value);
+    case "DEBUG_SET_REVEALED_THIS_TURN":
+      return debugSetRevealedThisTurn(state, action.playerId, action.value);
+    case "DEBUG_ADD_DESTROYED_TWO_COST_COMMANDER":
+      return debugAddDestroyedTwoCostCommander(state, action.playerId, action.cardId);
+    case "DEBUG_RESET_DESTROYED_TWO_COST_COMMANDERS":
+      return debugResetDestroyedTwoCostCommanders(state, action.playerId);
+    case "DEBUG_TRANSFORM_SUNLIGHT":
+      return debugTransformSunlight(state, action.playerId);
     default:
       return state;
   }
